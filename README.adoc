@@ -1,6 +1,11 @@
-= BASE DE DATOS: TRABAJO PRACTICO
-Matias Nicolas Alpuin <"email">; Micaela Ayelen Benitez <mabenittez@gmail.com>; Franco Valentin Chianese <chianesevalentin@gmail.com>; Joaquin Zanardi <"email">
-v1, {docdate}. Docentes Hernan Czemerinski y Hernan Rondelli
+= BASE DE DATOS: TRABAJO PRÁCTICO 
+
+Matias Nicolas Alpuin - Micaela Ayelen Benitez - Franco Valentin Chianese - Joaquin Zanardi 
+
+Version 1, 2022-06-13. 
+
+Docentes Hernan Czemerinski y Hernan Rondelli
+
 :title-page:
 :numbered:
 :source-highlighter: coderay
