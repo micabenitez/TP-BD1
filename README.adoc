@@ -1,0 +1,435 @@
+= BASE DE DATOS: TRABAJO PRACTICO
+Matias Nicolas Alpuin <"email">; Micaela Ayelen Benitez <mabenittez@gmail.com>; Franco Valentin Chianese <chianesevalentin@gmail.com>; Joaquin Zanardi <"email">
+v1, {docdate}. Docentes Hernan Czemerinski y Hernan Rondelli
+:title-page:
+:numbered:
+:source-highlighter: coderay
+:tabsize: 4
+
+== Introduccion
+El trabajo practico consiste en modelar lo que seria la relacion entre comercios y clientes en cuanto a las compras que realizan con sus tarjetas de credito. Dado un modelo de datos, utilizado para almacenar la informacion relativa a tarjetas de credito, se pide lo siguiente:
+
+Creacion de la base de datos::
+    Se deberán crear las tablas respetando los nombres de tablas, atributos y tipos de datos
+    especificados.
+    Se deberán agregar las PKs y FKs de todas las tablas, por separado de la creación de las
+    tablas. Además, le usuarie deberá tener la posibilidad de borrar todas las PKs y FKs, si
+    lo desea.
+Instancia de los datos::
+    Se deberán cargar 20 clientes y 20 comercios. Todes les clientes tendrán una tarjeta,
+    excepto dos clientes que tendrán dos tarjetas cada une. Una tarjeta deberá estar expirada
+    en su fecha de vencimiento.
+    La tabla cierre deberá tener los cierres de las tarjetas para todo el año 2022.
+Stored Precedures y Triggers::
+    - autorizacion de compra 
+    - generacion del resumen
+    - alerta a clientes.
+    - Se deberá crear una tabla con consumos virtuales para probar el sistema, la misma    deberá
+      contener los atributos: nrotarjeta, codseguridad, nrocomercio, monto. Y se deberá
+      hacer un procedimiento de testeo, que pida autorización para todos los consumos virtuales.
+JSON y Bases de datos NoSQL::
+    Por úlimo, para poder comparar el modelo relacional con un modelo no relacional NoSQL,
+    se pide guardar los datos de clientes, tarjetas, comercios, y compras (tres por cada entidad)
+    en una base de datos NoSQL basada en JSON. Para ello, utilizar la base de datos BoltDB.
+    Este código, también deberá ejecutarse desde una aplicación CLI escrita en Go.
+
+== Descripción
+La principal dificultad fue poder estructurar el codigo de forma que sea posible poder editar las funcionalidades de forma rapida.
+
+Una vez resulelto como estrcuturar el codigo, se fue dividiendo el trabajo en secciones que pudieron ser completadas por las diferentes partes del equipo.
+
+Al ejecutars el sistema se pueden ir navegando entre las opciones que se quieran probar.
+
+    1 - Crear Base de Datos
+    2 - Crear Tablas		
+    3 - Crear PKs y FKs		
+    4 - Crear Funciones y Triggers		
+    C - Crear Rapido (2, 3, 4)
+
+    5 - Insertar Datos
+
+    T - Correr Test
+    A - Generar Resumen
+    N - No SQL    
+
+    6 - Eliminar Base de Datos
+    7 - Eliminar Tablas
+    8 - Eliminar PKs y FKs		
+    9 - Eliminar Funciones y Triggers
+    B - Borrar Rapido (9, 8, 7)
+    0 - Terminar
+
+
+
+
+== Implementación
+=== Creación de base de datos 
+    - Se crearon funciones dentro de lib/connection.go que se encargan de manerjar las conexiones a postgres. La funcion encargada de generar labase de datos es *_CreateDatabase()_*
+
+=== Creacion de Tablas
+
+    - Las diferentes tablas fueron divididas en archivos individuales donde cada uno tiene su implementacion Alta, Baja, Insert. La funcion *_CreateTables()_* dentro de funciones/lib es la encargada de llamar de forma individual a cada tabla para su creacion.
+[source, go]
+func CreateTables() {
+    db.ClienteCreateTable()
+    db.TarjetaCreateTable()
+    db.ComercioCreateTable()
+    db.CompraCreateTable()
+    db.RechazoCreateTable()
+    db.CierreCreateTable()
+    db.CabeceraCreateTable()
+    db.DetalleCreateTable()
+    db.AlertaCreateTable()
+    db.ConsumoCreateTable()
+}
+
+=== Creación de PKs y FKs
+    - Para la creacion de PK y FK implementamos las funciones *_CreatePrimaryKey()_* y *_CreateForeignKey()_* , que a partir de cada tabla, crean las PK y FK pasandole los parametros necesarios segun corresponda.
+
+.Creacion ForeignKeys     
+[source, go]
+    func CreateForeignKey() {
+        //Cabecera + Detalle
+        fmt.Println("* Creando Claves Externas *")
+        db.AlertaCreateFK()
+        db.CabeceraCreateFK()
+        db.CompraCreateFK()
+        db.DetalleCreateFK()
+        db.RechazoCreateFK()
+        db.TarjetaCreateFK()
+        db.ConsumoCreateFK()
+    }
+
+.Tabla Alerta
+[source, go]
+    func AlertaCreateFK() {
+        db.CreateFK("alerta", "alerta_tarjeta_fk", "nrotarjeta", "tarjeta", "nrotarjeta")
+        db.CreateFK("alerta", "alerta_rechazo_fk", "nrorechazo", "rechazo", "nrorechazo")
+    }
+
+=== Stored Procedures 
+    - *Autorización de compra:*
+     Para autorizar una compra implementamos la función *_autorizar_compra()_* que recibe un número tarjeta, su código de seguridad, un número de comercio y el monto de la compra. Dicha función devulve `true` e inserta los datos recibidos en la tabla _compra_ si la tarjeta cumple con las siguientes condiciones: que el número de la tarjeta sea existente o que corresponda a una tarjeta vigente; que el código de seguridad sea correcto; que el monto total de compras pendientes más el monto de la compra no supere el límite de compra de la tarjeta y que la tarjeta no se encuentre vencida o suspendida. En caso contrario, devuelve `false` y se cargan los datos recibidos en la tabla _rechazo_.
+
+    
+.autorizar_compra()
+
+[source, go]
+func FuncionAutorizarCompra() {
+funcSQL := `create or replace function autorizarCompra(nro_tarjeta char(16), cod_seguridad text, nro_comercio int, monton decimal(7,2)) returns boolean as $$
+declare
+    tarjeta_valida record;
+    num_operacion int;
+    num_rechazo int;
+    monto_total float;    
+begin
+    num_rechazo := (select coalesce(max(nrorechazo),0) from rechazo);
+    select * into tarjeta_valida from tarjeta t where nro_tarjeta = t.nrotarjeta and t.estado = 'vigente'; -- guardo la tarjeta en la variable
+    if not found tarjeta_valida then
+        -- rechazo(nrorechazo int, nro_tarjeta char(16), nro_comercio int, fecha timestamp, monton decimal(7,2), motivo text)
+        insert into rechazo values (num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton, '?tarjeta no válida ó no vigente.');
+        return false;
+    end if;
+    --if (tarjeta_valida.validahasta < cast(CURRENT_DATE as text)) then
+    if (CAST(CONCAT(SUBSTRING(tarjeta_valida.validahasta,0,5),'/',SUBSTRING(tarjeta_valida.validahasta,5,6),'/01') AS DATE) < CURRENT_DATE) then
+        insert into rechazo values(num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton,'Tarjeta vencida');
+        update tarjeta set estado='anulada' where nrotarjeta=nro_tarjeta;
+        return false;
+    end if;
+    if tarjeta_valida.codseguridad != cod_seguridad then
+        insert into rechazo values (num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton,'código de seguridad inválido.');
+        return false;
+    end if;    
+    monto_total := (select sum(monto) from compra c where c.nrotarjeta = nro_tarjeta and c.pagado = false);
+    if tarjeta_valida.limitecompra < monto_total + monton then
+        insert into rechazo values (num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton,'supera límite de tarjeta.');
+        return false;
+    end if;
+    if tarjeta_valida.estado = 'anulada' then     
+        insert into rechazo values(num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton,'plazo de vigencia expirado.');
+        return false;
+    end if;
+    if tarjeta_valida.estado = 'suspendida' then     
+        insert into rechazo values(num_rechazo+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton,'la tarjeta se encuentra suspendida.');
+        return false;
+    end if;
+    -- compra(nrooperacion int, nro_tarjeta string, nro_comercio int, fechaTimeStamp string, monton float64, pagado bool)
+    num_operacion := (select coalesce(max(nrooperacion),0) from compra);
+    insert into compra values (num_operacion+1, nro_tarjeta, nro_comercio, CURRENT_TIMESTAMP, monton, false);
+    return true;
+end;
+$$ language plpgsql;`
+db.ExecuteQuery(funcSQL)
+fmt.Println("CREATE FUNCTION - autorizarCompra(nrotarjeta char(16), codseguridad int, nrocomercio int, monton decimal(7,2))")
+}
+    
+    - *Generar resumen:*
+    Recibe un número de cliente y un período del año, revisa la cantidad de compras del cliente y va contando cuánto va a ser el monto total para asi insertar los datos correspondientes a las tablas  *detalle* y *cabecera*.
+
+.GenerarResumen
+[source, go]
+func FuncionGenerarResumen() {
+	funcSQL := `create or replace function generarResumen(num_cliente int, mesP int, anioP int) returns void as $$
+declare
+    numerotarjeta text;
+    nro_resumen int;
+    cierre_tarjeta record;
+    datoscliente record;
+    monto_total decimal;
+    cantcompras int;
+    datoscomercio record;
+    i int;
+begin
+    select t.nrotarjeta into numerotarjeta from tarjeta t, cliente c where t.nrocliente=c.nrocliente and num_cliente=c.nrocliente;
+    select * into cierre_tarjeta from cierre c where c.mes = mesP and c.anio = anioP and terminacion = substring(numerotarjeta,16)::int;
+    select nombre,apellido,domicilio into datoscliente from cliente c,tarjeta t where num_cliente=c.nrocliente and t.nrocliente=num_cliente and t.nrotarjeta=numerotarjeta;
+    select count(nrooperacion) into cantcompras from compra c where c.nrotarjeta=numerotarjeta;
+    for i in 1..cantcompras loop
+        select sum(co.monto) into monto_total from compra co;
+    end loop;
+    nro_resumen := (select coalesce(max(nroresumen),0) from cabecera) + 1;
+    insert into cabecera values(nro_resumen, datoscliente.nombre,datoscliente.apellido,datoscliente.domicilio,
+        numerotarjeta,cierre_tarjeta.fechainicio,cierre_tarjeta.fechacierre,cierre_tarjeta.fechavto, monto_total);
+    select nroresumen into nro_resumen from cabecera;
+    for i in 1..cantcompras loop
+        select c.nombre,co.fecha,co.monto into datoscomercio from comercio c,compra co
+            where co.nrooperacion=i and c.nrocomercio=co.nrocomercio and co.nrotarjeta=numerotarjeta;
+        insert into detalle values(nro_resumen,i,datoscomercio.fecha,datoscomercio.nombre,datoscomercio.monto);
+    end loop;
+end;
+$$language plpgsql;`
+	db.ExecuteQuery(funcSQL)
+}
+
+=== Triggers
+Como se deben generar alertas por posibles fraudes, implementamos los siguientes triggers:
+
+    - *alerta_rechazo:* cada vez que se insertan datos en la tabla rechazo ejecuta un trigger que inserta el número de alerta, número de tarjeta, fecha, número de rechazo, el código de alerta y la descripción dentro de la tabla _alerta_.
+
+.alerta_rechazo
+[source, go]
+func FuncionAlertaRechazo() {
+	funcSQL := `create or replace function alerta_rechazo() returns trigger as $$
+    declare 
+        nro_alerta int;    
+    begin
+        nro_alerta := (select coalesce(max(nroalerta),0) from alerta);
+        insert into alerta values (nro_alerta+1, new.nrotarjeta, new.fecha, new.nrorechazo, 0, new.motivo);
+        return new;
+    end;
+    $$ language plpgsql;`
+	db.ExecuteQuery(funcSQL)
+}
+func TriggerAlertaRechazo() {
+	funcSQL := `create trigger alerta_rechazo_trg
+    after insert on rechazo
+    for each row
+execute procedure alerta_rechazo();`
+	db.ExecuteQuery(funcSQL)
+}
+
+    - *alerta_compra:* si detecta que se realizó una compra con la tarjeta dentro de un lapso menor a un minuto o cinco minutos lanza un trigger que inserta el número de alerta, número de tarjeta, fecha, número de rechazo, el código de alerta y la descripción dentro de la tabla _alerta_.
+
+.alerta_compra
+[source, go]
+  func FuncionAlertaCompra() {
+	funcSQL := `create or replace function alerta_compra() returns trigger as $$
+    declare 
+        nro_alerta int; 
+        compra_anterior record;   
+    begin
+        nro_alerta := (select coalesce(max(nroalerta),0) from alerta);
+        select * into compra_anterior from compra c, comercio co 
+        where c.nrotarjeta = new.nrotarjeta and c.nrocomercio = co.nrocomercio and c.nrocomercio != new.nrocomercio
+        and co.codigopostal = (select codigopostal from comercio com where com.nrocomercio = new.nrocomercio)  
+        and c.fecha > CURRENT_TIMESTAMP - interval '1 minute';
+        if found then
+            insert into alerta values (nro_alerta+1, new.nrotarjeta, new.fecha, new.nrorechazo, 1, 'Dos compras en un lapso menor de un minuto');
+            return new;
+        end if;
+        -- compra 5 minutos
+        select * into compra_anterior from compra c, comercio co 
+        where c.nrotarjeta = new.nrotarjeta and c.nrocomercio = co.nrocomercio and c.nrocomercio != new.nrocomercio
+        and co.codigopostal != (select codigopostal from comercio com where com.nrocomercio = new.nrocomercio)  
+        and c.fecha > CURRENT_TIMESTAMP - interval '5 minute';
+        if found then 
+            insert into alerta values (nro_alerta+1, new.nrotarjeta, new.fecha, new.nrorechazo, 5, 'Dos compras en un lapso menor de cinco minutos');
+            return new;
+        end if;
+        return new;
+    end;
+    $$ language plpgsql;`
+	db.ExecuteQuery(funcSQL)
+     func TriggerAlertaCompra() {
+	funcSQL := `create trigger alerta_compra_trg
+    after insert on compra
+    for each row
+    execute procedure alerta_compra();`
+	db.ExecuteQuery(funcSQL)
+}
+
+}
+
+    - *alerta_límite:* si una tarjeta registra dos rechazos por exceso de límite en el mismo día, lanza un trigger que cambia el estado de la tarjeta a 'suspendida' y luego graba una alerta asociada a este cambio de estado.
+.alerta_limite
+[source, go]
+   func FuncionAlertaLimite() {
+	funcSQL := `create or replace function alerta_limite() returns trigger as $$
+    declare
+        nro_alerta int; 
+		cant_rechazos int;
+	begin
+        nro_alerta := (select coalesce(max(nroalerta),0) from alerta);
+		if new.motivo = 'supera límite de tarjeta.' then
+			select count(*) into cant_rechazos from rechazo where new.nrotarjeta = rechazo.nrotarjeta and 
+            --   :: -> PostgreSQL-style typecast, otra forma de castear datos en psql
+            new.fecha::date = rechazo.fecha::date and rechazo.motivo = 'supera límite de tarjeta.';
+            if cant_rechazos = 2 then
+				update tarjeta set estado = 'suspendida' where new.nrotarjeta = tarjeta.nrotarjeta;
+				insert into alerta values(nro_alerta+1, new.nrotarjeta, new.fecha, new.nrorechazo, 32, 'Exceso de limite en el mismo dia');
+			end if;
+		end if;
+		return new;
+	end;
+    $$ language plpgsql;`
+	db.ExecuteQuery(funcSQL)
+}
+func TriggerAlertaLimite() {
+	funcSQL := `create trigger alerta_limite_trg
+    after insert on rechazo
+    for each row
+    execute procedure alerta_limite();`
+	db.ExecuteQuery(funcSQL)
+}
+
+:hardbreaks:
+=== NoSQL
+
+*_Conexion a BoltDB_*
+
+- Empezando a usar la base de datos no relacional Bolt DB nos encontramos con que la conexion a la base de datos era muy parecida a la de Postgres
+
+
+[source, go]
+   func ConnectionBolt() *bolt.DB {
+	    db, err := bolt.Open("tpbolt.db", 0600, nil)
+	    if err != nil {
+		    log.Fatal(err)
+	    }
+	    return db
+    }
+
+- Esta funcion usa la libreria BoltDB para crear una conexion a la base de datos que se guarda en el archivo tpbolt.db, pasandole por parametro 0600 que setea el filemode a lectura y escritura.
+
+*_Carga de datos_*
+
+- Para seguir con la estructura que veniamos usando decidimos crear en cada archivo que hace referencia a una "tabla" unos metodos que se encargan de cargar y leer datos en la base de datos no relacional.
+Para hacer esto creamos la siguiente funcion en los archivos clientes, tarjeta, comercio y compras:
+
+[source, go]
+    func ClienteInsertBolt(nroclienteB int, nombreB string, apellidoB string, telefonoB string) {
+        bucket := "cliente"
+        if len(telefonoB) > 12 {
+            telefonoB = telefonoB[0:11]
+        }
+        clientes := Cliente{NroCliente: nroclienteB,
+            Nombre:   nombreB,
+            Apellido: apellidoB,
+            Telefono: telefonoB}
+        data, err := json.MarshalIndent(clientes, "", " ")
+        if err != nil {
+            log.Fatalf("JSON marshaling failed: %s", err)
+        }
+        db.WriteToBucket(bucket, []byte(strconv.Itoa(nroclienteB)), data)
+}
+
+- La funcion ClienteInsertBolt() recibe todos los datos que tiene que tener un cliente. 
+Para poder guardarlo en la base de datos tuvimos que parsearlo a JSON, que en este caso en GO se llama Marshall. Para lograrlo creamos un Struct Cliente en el archivo y usandolo creamos un Cliente con todos sus datos. Todo esto esta implementado en los archivos tarjeta, comercio y compras con sus respectivos cambios.
+
+[source, go]
+    type Cliente struct {
+        NroCliente int
+        Nombre, Apellido, Telefono string
+    }
+
+- Al final de la funcion ClienteInsertBolt() se llama a una funcion llamada WriteToBucket() que es la encargada de recibir el nombre de un bucket, una lista de keys y un JSON para poder cargarlo a la base de datos:
+
+[source, go]
+    func WriteToBucket(bucketName string, key []byte, val []byte) error {
+        db := ConnectionBolt()
+        defer db.Close()
+        tx, err := db.Begin(true)
+        if err != nil {
+            return err
+        }
+        defer tx.Rollback()
+        b, _ := tx.CreateBucketIfNotExists([]byte(bucketName))
+        err = b.Put(key, val)
+        if err != nil {
+            return err
+        }
+        if err := tx.Commit(); err != nil {
+            return err
+        }
+        return nil
+    }
+
+- Esta funcion se conecta con la base de datos llamando a la funcion ConnectionBolt mencionada anteriormente, luego create el bucket si no existe e inserta el JSON al bucket creado en la instruccion anterior o en la especificada por parametro.
+Todo esto lo hace abriendo una transaccion con db.Begin(true) y la cierra con tx.Commit().
+Al estar armado de esta forma permitiria insertar multiples valores en un JSON y que si hay un error durante la carga hace un Rollback.
+
+*_Lectura de datos_*
+
+- Al igual que con la carga de datos, para la lectura de datos se crearon funciones en cada archivo de la siguiente forma:
+
+[source, go]
+    func ClienteSelectBolt(id int) {
+        bucket := "cliente"
+        data, _ := db.ReadUniqueFromBucket(bucket, []byte(strconv.Itoa(id)))
+        var cliente Cliente
+        err := json.Unmarshal(data, &cliente)
+        if err != nil {
+            log.Fatalf("JSON unmarshaling failed: %s", err)
+        }
+        fmt.Printf("%v\n", cliente)
+    }
+
+- La funcion ClienteSelectBolt() recibe un id que hace referencia a una key. Recibe un JSON de la funcion ReadUniqueFromBucket() y este JSON lo Unmarshalea para convertirlo a Cliente usando el Struct de Cliente.
+
+[source, go]
+    func ReadUniqueFromBucket(bucketName string, key []byte) ([]byte, error) {
+        db := ConnectionBolt()
+        defer db.Close()
+        var buf []byte
+        err := db.View(func(tx *bolt.Tx) error {
+            b := tx.Bucket([]byte(bucketName))
+            buf = b.Get(key)
+            return nil
+        })
+        return buf, err
+    }
+
+- La funcion ReadUniqueFromBucket recibe por parametro el nombre de un bucket y una key. Se conecta a la base de datos con ConnectionBol().
+Usando la funcion View de GO podemos acceder a la base de datos para leerla.
+
+- Finalmente para poder recibir la informacion de un bucket entero implementamos la siguiente funcion: 
+
+
+
+[source, go]
+    func SelectAllFromBucket(bucketName string) {
+        db := ConnectionBolt()
+        defer db.Close()
+        db.View(func(tx *bolt.Tx) error {
+            b := tx.Bucket([]byte(bucketName))
+            b.ForEach(func(k, v []byte) error {
+                fmt.Printf("key=%s, value=%s\n", k, v)
+                return nil
+            })
+            return nil
+        })
+
+- Esta funcion hace lo mismo que la anterior pero usa un ForEach en la referencia del bucket para recibir todas las key-values
+
+== Conclusión
+- Al realizar el trabajo practico pudimos poner en practica lo aprendido en la cursada. Aprendimos como realizar una conexion a una base de datos a traves de Golang asi como utlizar diferentes tipos de consultas para poder llevar a cabo todas las instrucciones solictadas.
